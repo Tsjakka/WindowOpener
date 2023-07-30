@@ -24,7 +24,12 @@ The next step was to figure out how to make the system robust for things like th
 
 Another important element is the microcontroller that is used to control the system. I selected an ESP8285 for this task and it works well. It is also extremely cheap, just a few euros on the well known Chinese websites. A serious downside of these boards is that there are quite a few limitations to the use of the GPIO connections. You have to be very careful when selection ports for connecting stuff. Fortunately, there are some good sites that collect information on these things, such as https://randomnerdtutorials.com/esp8266-pinout-reference-gpios/. This page describes the ESP 8266, but the info should be the same for the 8285.
 
-The next step was to figure out how to control the motor from software. Googling led me to this [website](https://electronicsclub.info/transistorcircuits.htm#switching), that describes how to use a transistor as a switch. Since the motor uses 12 V, I also needed a relay to switch the 12 V to the motor and one more to switch the direction. So, step by step I put all the pieces together on a breadboard and created the system.
+The next step was to figure out how to control the motor from software. Googling led me to this [website](https://electronicsclub.info/transistorcircuits.htm#switching), that describes how to use a transistor as a switch. Since the motor uses 12 V, I also needed a relay to switch the 12 V to the motor and one more to switch the direction. Unfortunately, it is hard to mount relays on a breadboard, so I decided to put them on a PCB without creating a breadboard setup for the whole system. As you can imagine, because of the intricasies of the ESP8285, this became a bit of a trial and error situation. I have had to resolder connections quite a few times to get everything working.
+
+With the knowledge I gained from experimenting with the breadboard and the PCB, I have created an electronic schema for the final system. Like mentioned before, you have to be careful which GPIO you use, so along the way I found out that some things didn't work and I had to move them to another IO. Later, I ran into the problem that the ESP8285 doesn't boot without pressing the reset button when no USB power supply is connected. A google search led me to a site that told me a resistor between 3.3V and TX fixes this problem.
+In the end I got it working and this is the final schema:
+
+![The schema](https://github.com/Tsjakka/WindowOpener/blob/main/Photos/PCB-design.jpg)
 
 # The software
 
@@ -34,9 +39,7 @@ Before I started writing code, I made a state machine diagram that captures the 
 
 I used the Arduino development environment to write the software. It's not the best IDE, but it's free and does the job.
 
-After I created an initial version of the software, I started testing it on the test setup I made on the breadboard. This way I learned how the system behaved and where I could improve it. In this period I made a lot of changes to the software and it got better and better. 
-
-The window can be opened or closed by powering the motor for a fixed period. Because the motor has end sensors, this time can be the time the motor takes to close from the fully open position or vice versa.
+After I created an initial version of the software, I started testing it on several test setups I made on a breadboard. This way I learned how the individual devices behave. In this period I made a lot of changes to the software and it got better and better. 
 
 What I also included in the software was:
 * A Wi-Fi client that connects the system to the internet.
@@ -46,9 +49,11 @@ What I also included in the software was:
 
 # The hardware
 
-With the knowledge I gained from experimenting with the breadboard I started sketching an electronic schema for the final system. Like mentioned before, you have to be careful which GPIO to use, so along the way I found out that some things didn't work and I had to move them to another IO. In the end I got it working and this is the final schema:
+The PCB I created can be seen in the following photos.
 
-![The schema](https://github.com/Tsjakka/WindowOpener/blob/main/Photos/Diagram.jpg)
+![The schema](https://github.com/Tsjakka/WindowOpener/blob/main/Photos/PCB-top.jpg)
+
+![The schema](https://github.com/Tsjakka/WindowOpener/blob/main/Photos/PCB-bottom.jpg)
 
 The full list of hardware is:
 * Universal Single Side PCB Glass Fiber 9x15cm
