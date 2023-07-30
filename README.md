@@ -71,4 +71,4 @@ Below you can see what the final window opener looks like.
 
 In the Photos directory you can find some more photos. Or watch this movie showing the window in motion:
 
-![The window opener IRL](https://github.com/Tsjakka/WindowOpener/blob/main/Photos/WindowOpener.mp4)
+[![Watch the video](https://img.youtube.com/vi/cq2LoVT4mW4/maxresdefault.jpg)](https://youtu.be/cq2LoVT4mW4)
