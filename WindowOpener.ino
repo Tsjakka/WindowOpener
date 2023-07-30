@@ -9,7 +9,7 @@
   https://randomnerdtutorials.com/esp8266-web-server/
   https://www.arduino.cc/en/Tutorial/UdpNTPClient
   https://github.com/sfrwmaker/sunMoon
-  https://wolles-elektronikkiste.de/ina226
+  https://github.com/RobTillaart/INA226
 
   Written by Tsjakka from the Netherlands.
   BSD license, all text above must be included in any redistribution.
@@ -41,9 +41,9 @@ const byte PowerPin = 2;                    // When high turns on power to the m
 const int buttonDelay = 20;                 // Number of milliseconds a button input has to be high before a button press is registered.
 // Pins 4 and 5 are used for I2C
 
-// Regional settings
-const float Latitude = 0.0000;              // REPLACE WITH YOUR COORDINATES AND TIME ZONE
-const float Longitude = 0.0000;
+// Regional settings. Adjust these to match your location
+const float Latitude = 0.0000;              // Specifies the north�south position of your location
+const float Longitude = 0.0000;             // Specifies the east-west position of your location
 int Timezone = 60;                          // UTC difference in minutes (can be changed through web page)
 bool UseDST = true;                         // Indicates whether Daylight Saving Time is observed in your region or not.
 
@@ -68,7 +68,7 @@ const unsigned int localPort = 2390;        // Local port to listen for UDP pack
 const int NtpPacketSize = 48;               // NTP time stamp is in the first 48 bytes of the message
 const time_t UpdateTimeTimeout = 300;       // Time (in seconds) we will try updating the clock
 
-// Email credentials
+// Email credentials. Replace with yours
 const char* fromAddress = "REPLACE_WITH_YOUR_EMAIL";      // The address you want alarm messages sent from
 const char* toAddress = "REPLACE_WITH_YOUR_EMAIL";        // The email address you want alarm messages sent to
 const char* smtpServer = "REPLACE_WITH_YOUR_SERVER";      // The server to use for sending email
@@ -79,6 +79,7 @@ const char* emailPassword = "REPLACE_WITH_YOUR_PASSWORD"; // The password for th
 int CurrentLimit = 750;                     // The maximum current that may be drawn. If exceeded the software will stop the motor.
 int OpenMillis = 18000;                     // The time needed to open the window
 int CloseMillis = 18000;                    // The time needed to fully close the window
+int LastOpenMillis = 0;                     // The duration of the latest opening motion
 int MemoryMillis = 0;                       // The time it takes to open the window to the memory position
 const int DirDelay = 500;                   // Delay to prevent abrupt motor direction changes
 
@@ -390,6 +391,10 @@ bool dstActive(time_t time) {
   }
 
   return result;
+}
+
+bool isWeekendDay() {
+  return (dayOfWeek(now()) == 1 || dayOfWeek(now()) == 7);
 }
 
 // Two functions to handle debug messages
@@ -748,7 +753,7 @@ void handleWebClient() {
             client.println("</p>");
 
             client.print("<p>Today's opening time: ");
-            if (dayOfWeek(now()) == 1 || dayOfWeek(now()) == 7) {
+            if (isWeekendDay()) {
               sprintf(buf, "%02d:%02d", WeekendHourOpen, WeekendMinuteOpen);
             } else {
               sprintf(buf, "%02d:%02d", HourOpen, MinuteOpen);
@@ -757,7 +762,7 @@ void handleWebClient() {
             client.println("</p>");
 
             client.print("<p>Today's closing time: ");
-            if (dayOfWeek(now()) == 1 || dayOfWeek(now()) == 7) {
+            if (isWeekendDay()) {
               sprintf(buf, "%02d:%02d", WeekendHourClose, WeekendMinuteClose);
             } else {
               sprintf(buf, "%02d:%02d", HourClose, MinuteClose);
@@ -1110,8 +1115,8 @@ void loop() {
 
         // Open the window at the specified time except when the temperature is too low
         if (((!UseTemperature || temperature > ClosingTemperature) &&
-             (((dayOfWeek(now()) > 1) && (dayOfWeek(now()) < 7) && (hour() == HourOpen) && (minute() == MinuteOpen)) ||
-              ((dayOfWeek(now()) == 1 || dayOfWeek(now()) == 7) && (hour() == WeekendHourOpen) && (minute() == WeekendMinuteOpen)))) ||
+             ((!isWeekendDay() && (hour() == HourOpen) && (minute() == MinuteOpen)) ||
+              (isWeekendDay() && (hour() == WeekendHourOpen) && (minute() == WeekendMinuteOpen)))) ||
             (userCommand == OpenCmd)) {
           userCommand = NoCmd;
           stateMachineState = Opening;
@@ -1119,8 +1124,8 @@ void loop() {
 
         // Close the window at the specified time or when the temperature becomes too low
         if ((UseTemperature && temperature <= ClosingTemperature) ||
-            ((dayOfWeek(now()) < 6) && (hour() == HourClose) && (minute() == MinuteClose)) ||
-             ((dayOfWeek(now()) >= 6) && (hour() == WeekendHourClose) && (minute() == WeekendMinuteClose)) ||
+            (!isWeekendDay() && (hour() == HourClose) && (minute() == MinuteClose)) ||
+            (isWeekendDay() && (hour() == WeekendHourClose) && (minute() == WeekendMinuteClose)) ||
             (userCommand == CloseCmd)) {
           userCommand = NoCmd;
           stateMachineState = Closing;
@@ -1147,16 +1152,45 @@ void loop() {
       }
 
       // Continuous actions
+      // Check for the Store button
+      if (userCommand == StoreCmd) {
+        if (!storeButtonPressed) {
+          storeButtonPressed = true;
+          storeButtonPressedAt = millis();
+        }
+      } else {
+        storeButtonPressed = false;
+      }
+
+      // Check if the Store button is being held for more than 2 seconds, if so reset the memory position
+      if (storeButtonPressed && millis() > storeButtonPressedAt + 2000) {
+        userCommand = NoCmd;
+        storeButtonPressed = false;
+
+        MemoryMillis = 0;
+
+        // Write the new memory position to EEPROM
+        EEPROM.put(22, MemoryMillis);
+        if (EEPROM.commit()) {
+          printNoLine("New memory position stored: ");
+          printLine(String(MemoryMillis));
+        } else {
+          printLine("New memory position not stored");
+        }
+      }
 
       // Transitions
       if (!stateChanged) {
         // Open the window at the specified time except when the temperature is too low
         if (((!UseTemperature || temperature > ClosingTemperature) && 
-            (((dayOfWeek(now()) < 6) && (hour() == HourOpen) && (minute() == MinuteOpen)) ||
-             ((dayOfWeek(now()) >= 6) && (hour() == WeekendHourOpen) && (minute() == WeekendMinuteOpen)))) ||
+            ((!isWeekendDay() && (hour() == HourOpen) && (minute() == MinuteOpen)) ||
+             (isWeekendDay() && (hour() == WeekendHourOpen) && (minute() == WeekendMinuteOpen)))) ||
             (userCommand == OpenCmd)) {
           userCommand = NoCmd;
           stateMachineState = Opening;
+        } else if (userCommand == CloseCmd) {
+          userCommand = NoCmd;
+          stateMachineState = Closing;
         } else if (userCommand == Open1SecCmd || userCommand == Close1SecCmd) {
           stateMachineState = Moving1Sec;
         }
@@ -1200,9 +1234,7 @@ void loop() {
 
       // Actions on entry
       if (stateChanged) {
-        if (MemoryMillis == 0) {
-          MemoryMillis = millis() - startMovingMillis;
-        }
+        LastOpenMillis = millis() - startMovingMillis;
         moveWindow(Stop);
         printDateTime(t_now);
         printLine(" State: Open");
@@ -1225,9 +1257,7 @@ void loop() {
         userCommand = NoCmd;
         storeButtonPressed = false;
 
-        if (MemoryMillis != 0) {
-          MemoryMillis = 0;
-        }
+        MemoryMillis = LastOpenMillis;
 
         // Write the new memory position to EEPROM
         EEPROM.put(22, MemoryMillis);
@@ -1243,11 +1273,14 @@ void loop() {
       if (!stateChanged) {
         // Close the window at the specified time or when the temperature becomes too low
         if ((UseTemperature && (temperature <= ClosingTemperature)) ||
-            ((dayOfWeek(now()) < 6) && (hour() == HourClose) && (minute() == MinuteClose)) ||
-             ((dayOfWeek(now()) >= 6) && (hour() == WeekendHourClose) && (minute() == WeekendMinuteClose)) ||
+            (!isWeekendDay() && (hour() == HourClose) && (minute() == MinuteClose)) ||
+             (isWeekendDay() && (hour() == WeekendHourClose) && (minute() == WeekendMinuteClose)) ||
             (userCommand == CloseCmd)) {
           userCommand = NoCmd;
           stateMachineState = Closing;
+        } else if (userCommand == OpenCmd) {
+          userCommand = NoCmd;
+          stateMachineState = Opening;
         } else if (userCommand == Open1SecCmd || userCommand == Close1SecCmd) {
           stateMachineState = Moving1Sec;
         }
