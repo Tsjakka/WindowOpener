@@ -12,7 +12,7 @@
   https://github.com/RobTillaart/INA226
 
   Written by Tsjakka from the Netherlands.
-  BSD license, all text above must be included in any redistribution.
+  BSD license, this line and all text above must be included in any redistribution.
  ***************************************************************************/
 
 #include <math.h>
@@ -26,6 +26,31 @@
 #include <ESP_EEPROM.h>
 #include <INA226.h>
 #include <Wire.h>
+#include "Secrets.h"
+
+// ************************************************************************
+// Create file Secrets.h with the following contents. Replace with your
+// information where indicated.
+// ************************************************************************
+/*
+// Wifi connection
+const char* ssid = "REPLACE_WITH_YOUR_SSID";
+const char* password = "REPLACE_WITH_YOUR_PASSWORD";
+
+// Email
+const char* fromAddress = "REPLACE_WITH_EMAIL_ADDRESS";       // The email address you want messages to be sent from
+const char* toAddress = "REPLACE_WITH_EMAIL_ADDRESS";         // The email address you want messages sent to
+const char* smtpServer = "REPLACE_WITH_SERVER_URL";           // The server to use for sending email (e.g. smtp.gmail.com)
+const char* emailAccount = "REPLACE_WITH_EMAIL_ADDRESS";      // The email account on the server (e.g. myaddress@gmail.com)
+const char* emailPassword = "REPLACE_WITH_PASSWORD";          // The password for the email account (for Gmail an App Password)
+
+// Location
+const float Latitude = 0.0000000;                             // Replace with your coordinates
+const float Longitude = 0.000000;
+*/
+// ************************************************************************
+// End of Secrets.h
+// ************************************************************************
 
 // ************************************************************************
 // Change the constants below to adjust the software to your situation
@@ -42,10 +67,12 @@ const int buttonDelay = 20;                 // Number of milliseconds a button i
 // Pins 4 and 5 are used for I2C
 
 // Regional settings. Adjust these to match your location
-const float Latitude = 0.0000;              // Specifies the north�south position of your location
-const float Longitude = 0.0000;             // Specifies the east-west position of your location
-int Timezone = 60;                          // UTC difference in minutes (can be changed through web page)
-bool UseDST = true;                         // Indicates whether Daylight Saving Time is observed in your region or not.
+uint16_t Timezone = 60;                     // UTC difference in minutes (can be changed through web page)
+bool UseDST = true;                         // Is Daylight Saving Time observed in your region (can be changed through web page)
+
+// ************************************************************************
+// Change the constants above to adjust the software to your situation
+// ************************************************************************
 
 // Opening and closing times (can be changed through the web page)
 uint8_t HourOpen = 0;                       // The time the window opens
@@ -57,30 +84,23 @@ uint8_t WeekendMinuteOpen = 0;
 uint8_t WeekendHourClose = 6;               // The time the window closes in the weekend
 uint8_t WeekendMinuteClose = 30;
 
-// For the Wifi connection. Replace with your network credentials
-const char* ssid = "REPLACE_WITH_YOUR_SSID";
-const char* password = "REPLACE_WITH_YOUR_PASSWORD";
+// For the Wifi connection
+#define RETRY_PERIOD 30                     // Number of seconds before retrying wifi connection
 const time_t connectPeriod = 90;            // Max period (in s) for setting up a wifi connection
+uint16_t retryPeriod = RETRY_PERIOD;        // Number of seconds before retrying wifi connection
 
 // NTP stuff
-const char* NtpServer = "time.windows.com"; // A reliable NTP server ("time.nist.gov" didn't work so well)
+const char* NtpServer = "pool.ntp.org";     // A pool of NTP servers
 const unsigned int localPort = 2390;        // Local port to listen for UDP packets
 const int NtpPacketSize = 48;               // NTP time stamp is in the first 48 bytes of the message
 const time_t UpdateTimeTimeout = 300;       // Time (in seconds) we will try updating the clock
 
-// Email credentials. Replace with yours
-const char* fromAddress = "REPLACE_WITH_YOUR_EMAIL";      // The address you want alarm messages sent from
-const char* toAddress = "REPLACE_WITH_YOUR_EMAIL";        // The email address you want alarm messages sent to
-const char* smtpServer = "REPLACE_WITH_YOUR_SERVER";      // The server to use for sending email
-const char* emailAccount = "REPLACE_WITH_YOUR_ACCOUNT";   // The email account on the server
-const char* emailPassword = "REPLACE_WITH_YOUR_PASSWORD"; // The password for the email account
-
 // Stuff related to controlling the motor
-int CurrentLimit = 750;                     // The maximum current that may be drawn. If exceeded the software will stop the motor.
-int OpenMillis = 18000;                     // The time needed to open the window
-int CloseMillis = 18000;                    // The time needed to fully close the window
+uint16_t CurrentLimit = 750;                // The maximum current that may be drawn. If exceeded the software will stop the motor.
+uint16_t OpenMillis = 18000;                // The time needed to open the window
+uint16_t CloseMillis = 18000;               // The time needed to fully close the window
+uint16_t MemoryMillis = 0;                  // The time it takes to open the window to the memory position
 int LastOpenMillis = 0;                     // The duration of the latest opening motion
-int MemoryMillis = 0;                       // The time it takes to open the window to the memory position
 const int DirDelay = 500;                   // Delay to prevent abrupt motor direction changes
 
 // INA226
@@ -88,8 +108,9 @@ const int DirDelay = 500;                   // Delay to prevent abrupt motor dir
 
 // For reading the temperature
 bool Bme280Present = false;                 // Initialize/use the BME280 or not
+uint16_t TemperatureOffset = 0;             // Add to measured temperature to get real temperature (in 0.1 °C)
 const bool UseTemperature = false;          // If true, the window will close when the temperature drops below ClosingTemperature
-const float ClosingTemperature = 0;         // Close the window at night when the temperature goes below this value
+int ClosingTemperature = 20;                // Close the door at night when the temperature goes below this value (in 0.1 �C)
 const time_t TempCheckPeriod = 180;         // Number of seconds between checks
 
 // ************************************************************************
@@ -102,7 +123,7 @@ enum MotorCommand {
   CloseDir,
 };
 
-enum UserCommand {
+enum Command {
   OpenCmd,
   CloseCmd,
   StoreCmd,
@@ -132,13 +153,11 @@ bool clientActive = false;                  // A web client is active
 String currentLine = "";                    // A string to hold incoming data from the client
 time_t clientConnectedAt;
 const time_t webConnectPeriod = 30;         // Max timeout period (in s) for HTTP connections
-
-// Variable to store the HTTP request
-String header;
+String header;                              // Variable to store the HTTP request
 
 WiFiUDP Udp;                                // A UDP instance for sending and receiving packets over UDP
 byte packetBuffer[NtpPacketSize];           // Buffer to hold incoming and outgoing packets
-time_t updateTimeStarted;                   // The time when we started updating the clock
+time_t clockUpdateStarted;                  // The time when we started updating the clock
 bool ntpTimeSet = false;                    // Has the time been set through NTP?
 bool emailSent = false;                     // Has an email been sent because setting the time failed?
 int lastSecond = -1;                        // The second we last did stuff for NTP
@@ -161,8 +180,8 @@ time_t sunSet = 0;
 // Related to main state machine
 enum StateMachineState stateMachineState = NotRunning;
 enum StateMachineState previousStateMachineState = NotRunning;
-bool stateChanged = true;                       // Start with entry code
-UserCommand userCommand = NoCmd;                // Command given through a button press or through the web interface
+bool stateChanged = true;                  // Start with entry code
+Command userCommand = NoCmd;                // Command given through a button press or through the web interface
 unsigned long startMovingMillis = 0;
 bool buttonPressed;
 unsigned long buttonPressedAt;
@@ -184,11 +203,15 @@ float temperature;
 float humidity;                             // Informational
 float pressure;                             // Informational
 
-String debugText = "";                      // A string to hold all debug text
+#define MAX_DEBUG_TEXT 16000
+String debugText = "";                      // A string to hold all debug text (reserved in setup())
 
 // The setup function that initializes everything
 void setup() {
   Serial.begin(115200);
+
+  // Reserve the memory for the debug log while the heap is not yet fragmented
+  debugText.reserve(MAX_DEBUG_TEXT);
 
   // Initialize GPIO
   pinMode(OpenPin, INPUT);
@@ -199,6 +222,53 @@ void setup() {
   pinMode(PowerPin, OUTPUT);
   digitalWrite(DirectionPin, LOW);
   digitalWrite(PowerPin, LOW);
+
+  // When using the temperature, initialize the BME280
+  if (Bme280Present) {
+    // Check for the BME280 sensor
+    printLine("Starting BME280 sensor");
+    if (bme.begin(0x76)) {
+      // Scenario for weather monitoring
+      printLine("Setting BME280 to weather station scenario:");
+      printLine("  Forced mode, 1x temperature / 1x humidity / 1x pressure oversampling, filter off");
+      bme.setSampling(Adafruit_BME280::MODE_FORCED,
+        Adafruit_BME280::SAMPLING_X1,  // Temperature
+        Adafruit_BME280::SAMPLING_X1,  // Pressure
+        Adafruit_BME280::SAMPLING_X1,  // Humidity
+        Adafruit_BME280::FILTER_OFF);
+    } else {
+      printLine("Could not find a valid BME280 sensor, please check wiring.");
+      Bme280Present = false;
+    }
+  }
+
+  // The begin() call is required to initialize the EEPROM library
+  EEPROM.begin(24);
+
+  // Read from EEPROM
+  bool dataPresent = false;
+  EEPROM.get(0, dataPresent);
+  if (dataPresent) {
+    EEPROM.get(1, Timezone);
+    EEPROM.get(3, TemperatureOffset);
+    EEPROM.get(5, UseDST);
+    EEPROM.get(6, HourOpen);
+    EEPROM.get(7, MinuteOpen);
+    EEPROM.get(8, HourClose);
+    EEPROM.get(9, MinuteClose);
+    EEPROM.get(10, WeekendHourOpen);
+    EEPROM.get(11, WeekendMinuteOpen);
+    EEPROM.get(12, WeekendHourClose);
+    EEPROM.get(13, WeekendMinuteClose);
+    EEPROM.get(14, OpenMillis);
+    EEPROM.get(16, CloseMillis);
+    EEPROM.get(18, MemoryMillis);
+    EEPROM.get(20, CurrentLimit);
+    EEPROM.get(22, retryPeriod);
+  }
+  else {
+    printLine("Using default configuration");
+  }
 
   // Initialize Wi-Fi. Force the ESP to reset Wi-Fi and initialize correctly.
   Serial.print("WiFi status = ");
@@ -243,7 +313,16 @@ void setup() {
     WiFi.disconnect();
     Serial.println();
     Serial.println("No Wi-Fi connection established, rebooting");
-    delay(5000);
+
+    delay(retryPeriod * 1000);
+    if (retryPeriod < 600) {
+      retryPeriod = retryPeriod * 2;
+      EEPROM.put(22, retryPeriod);
+
+      // Write the data to EEPROM
+      bool ok = EEPROM.commit();
+      printLine((ok) ? "Commit OK" : "Commit failed");
+    }
     ESP.restart();
   }
 
@@ -258,52 +337,10 @@ void setup() {
     ina226.setMaxCurrentShunt(15, 0.002);
   }
 
-  // When using the temperature, initialize the BME280
-  if (Bme280Present) {
-    // Check for the BME280 sensor
-    printLine("Starting BME280 sensor");
-    if (bme.begin(0x76)) {
-      // Scenario for weather monitoring
-      printLine("Setting BME280 to weather station scenario:");
-      printLine("  Forced mode, 1x temperature / 1x humidity / 1x pressure oversampling, filter off");
-      bme.setSampling(Adafruit_BME280::MODE_FORCED,
-        Adafruit_BME280::SAMPLING_X1,  // Temperature
-        Adafruit_BME280::SAMPLING_X1,  // Pressure
-        Adafruit_BME280::SAMPLING_X1,  // Humidity
-        Adafruit_BME280::FILTER_OFF);
-    } else {
-      printLine("Could not find a valid BME280 sensor, please check wiring.");
-      Bme280Present = false;
-    }
-  }
-
-  // The begin() call is required to initialize the EEPROM library
-  EEPROM.begin(32);
-
-  // Read from EEPROM
-  bool dataPresent = false;
-  EEPROM.get(0, dataPresent);
-  if (dataPresent) {
-    EEPROM.get(1, Timezone);
-    EEPROM.get(5, UseDST);
-    EEPROM.get(6, HourOpen);
-    EEPROM.get(7, MinuteOpen);
-    EEPROM.get(8, HourClose);
-    EEPROM.get(9, MinuteClose);
-    EEPROM.get(10, WeekendHourOpen);
-    EEPROM.get(11, WeekendMinuteOpen);
-    EEPROM.get(12, WeekendHourClose);
-    EEPROM.get(13, WeekendMinuteClose);
-    EEPROM.get(14, OpenMillis);
-    EEPROM.get(18, CloseMillis);
-    EEPROM.get(22, MemoryMillis);
-    EEPROM.get(26, CurrentLimit);
-  }
-
   // For NTP
   Udp.begin(localPort);
   printLine("Started listening for UDP packets");
-  updateTimeStarted = now();
+  clockUpdateStarted = now();
 
   // Set the callback function to get email sending results
   smtp.callback(smtpCallback);
@@ -342,7 +379,7 @@ time_t getNtpTime() {
     Udp.read(packetBuffer, NtpPacketSize);  // Read the packet into the buffer
 
     // The timestamp starts at byte 40 of the received packet and is four bytes,
-    // or two words, long. First, esxtract the two words:
+    // or two words, long. First, extract the two words:
 
     unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
     unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
@@ -369,48 +406,49 @@ time_t getNtpTime() {
   return result;
 }
 
-// Daylight Saving Time starts at 2 a.m. on the last Sunday in March. The clock is then set 1 hour
-// ahead to 3 o'clock. So this Sunday lasts only 23 hours; an hour shorter than a normal day.
-// Winter time starts at 3 a.m. on the last Sunday in the month of October. The time is
-// then reset 1 hour to 2 hours. In practice this means that this day lasts 25 hours.
-// This function determines whether DST is active on the date specified by parameter 'time'.
-// Note that it does not look at the time to make this determination, so it returns true for the
-// last Sunday in March, regardless of the time, and false for the last Sunday in October.
+// In the EU, Daylight Saving Time starts at 1 a.m. UTC on the last Sunday in March and ends at
+// 1 a.m. UTC on the last Sunday in October. In the Netherlands that is 2 a.m. local time in
+// March (the clock moves ahead to 3 o'clock) and 3 a.m. local time in October (the clock moves
+// back to 2 o'clock).
+// This function determines whether DST is active at the moment specified by parameter 'utc',
+// which must be UTC time, not local time.
 // Note: dayOfWeek(SUN) = 1, dayOfWeek(MON) = 2, etc.
-bool dstActive(time_t time) {
-  bool result = false;
-  int dayParam = day(time);
-  int monthParam = month(time);
-  int dayOfWeekParam = dayOfWeek(time);
+bool dstActive(time_t utc) {
+  int monthParam = month(utc);
+  if (monthParam < 3 || monthParam > 10) return false;
+  if (monthParam > 3 && monthParam < 10) return true;
 
-  // Check if today is a DST day
-  if ((monthParam == 3 && dayParam >= 25 && dayOfWeekParam <= dayParam - 24) ||
-      (monthParam == 10 && (dayParam < 25 || (dayParam >= 25 && dayParam - dayOfWeekParam <= 23))) ||
-      (monthParam > 3 && monthParam < 10)) {
-    result = true;
-  }
+  // March and October both have 31 days. Find the day of the month of the last Sunday.
+  int dayParam = day(utc);
+  int lastSunday = 31 - ((dayOfWeek(utc) - 1 + 31 - dayParam) % 7);
+  bool afterSwitch = (dayParam > lastSunday) || (dayParam == lastSunday && hour(utc) >= 1);
 
-  return result;
+  // DST starts at the switch in March and ends at the switch in October
+  return (monthParam == 3) ? afterSwitch : !afterSwitch;
 }
 
 bool isWeekendDay() {
   return (dayOfWeek(now()) == 1 || dayOfWeek(now()) == 7);
 }
 
-// Two functions to handle debug messages
-void printNoLine(String text) {
-  if (debugText.length() > 23800) {
-    debugText.remove(0, 1000);
+// Add text to the debug log. The memory for the log is reserved once in setup() and old text is
+// removed in place, so the log never needs new memory. Growing a large String fails silently
+// when the heap is fragmented, which made the log stop.
+void addDebugText(const String& text) {
+  if (debugText.length() + text.length() > MAX_DEBUG_TEXT) {
+    debugText.remove(0, debugText.length() - MAX_DEBUG_TEXT / 2);
   }
   debugText += text;
+}
+
+// Two functions to handle debug messages
+void printNoLine(String text) {
+  addDebugText(text);
   Serial.print(text);
 }
 
 void printLine(String text) {
-  if (debugText.length() > 23800) {
-    debugText.remove(0, 1000);
-  }
-  debugText += text + "<br>\n";
+  addDebugText(text + "<br>\n");
   Serial.println(text);
 }
 
@@ -558,8 +596,8 @@ void handleWebClient() {
   char buf[20];
 
   if (!clientActive) {
-    client = server.available();  // Listen for incoming clients
-    if (client) {                 // If a new client connects
+    client = server.available();            // Listen for incoming clients
+    if (client) {                           // If a new client connects
       clientConnectedAt = now();
       printNoLine("New client connection at ");
       printDateTime(clientConnectedAt);
@@ -568,34 +606,28 @@ void handleWebClient() {
       currentLine = "";
     }
   } else {
-    if (client.connected()) {    // Check if the client is still connected
-      if (client.available()) {  // If there's bytes to read from the client,
-        char c = client.read();  // read a byte, then
-        Serial.write(c);         // print it out the serial monitor
+    if (client.connected()) {               // Check if the client is still connected
+      if (client.available()) {             // If there's bytes to read from the client,
+        char c = client.read();             // read a byte, then
+        Serial.write(c);                    // print it out the serial monitor
         header += c;
-        if (c == '\n') {         // If the byte is a newline character
+        if (c == '\n') {                    // If the byte is a newline character
           // If the current line is blank, you got two newline characters in a row.
           // That's the end of the client HTTP request, so send a response
           if (currentLine.length() == 0) {
-            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
-            // and a content-type so the client knows what's coming, then a blank line
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-type:text/html");
-            client.println("Connection: close");
-            client.println();
-
             // Handle user input
+            bool redirect = true;                 // Commands are answered with a redirect to the main page
             if (header.indexOf("GET /close1sec") >= 0) {
               printLine("Closed for 1 second selected");
-              userCommand = Open1SecCmd;
+              userCommand = Close1SecCmd;
             } else if (header.indexOf("GET /open1sec") >= 0) {
               printLine("Open for 1 second selected");
-              userCommand = Close1SecCmd;
+              userCommand = Open1SecCmd;
             } else if (header.indexOf("GET /open") >= 0) {
               printLine("Open selected");
               userCommand = OpenCmd;
             } else if (header.indexOf("GET /close") >= 0) {
-              printLine("Closed selected");
+              printLine("Close selected");
               userCommand = CloseCmd;
             } else if (header.indexOf("GET /stop") >= 0) {
               printLine("Stop selected");
@@ -607,14 +639,8 @@ void handleWebClient() {
               // Find first parameter
               int begin = header.indexOf('?');
               int end = header.indexOf('&');
-              // printNoLine("begin=");
-              // printNoLine(String(begin));
-              // printNoLine(" end=");
-              // printLine(String(end));
               if (begin > -1 && end > begin + 1) {
                 String sub = header.substring(begin + 1, end);
-                // printNoLine("Substring: ");
-                // printLine(sub);
 
                 // Split parameter in name and value. Repeat for all parameters
                 bool dataPresent = true;
@@ -634,33 +660,33 @@ void handleWebClient() {
                       dataPresent = false;
                     } else if (param.indexOf("Timezone") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) Timezone = temp;
+                      if (temp >= 0 && temp <= 23) Timezone = temp;
                     } else if (param.indexOf("UseDST") == 0) {
                       UseDST = true;
                     } else if (param.indexOf("HourOpen") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) HourOpen = temp;
+                      if (temp >= 0 && temp <= 23) HourOpen = temp;
                     } else if (param.indexOf("MinuteOpen") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) MinuteOpen = temp;
+                      if (temp >= 0 && temp <= 59) MinuteOpen = temp;
                     } else if (param.indexOf("HourClose") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) HourClose = temp;
+                      if (temp >= 0 && temp <= 23) HourClose = temp;
                     } else if (param.indexOf("MinuteClose") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) MinuteClose = temp;
+                      if (temp >= 0 && temp <= 59) MinuteClose = temp;
                     } else if (param.indexOf("WeekendHourOpen") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) WeekendHourOpen = temp;
+                      if (temp >= 0 && temp <= 23) WeekendHourOpen = temp;
                     } else if (param.indexOf("WeekendMinuteOpen") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) WeekendMinuteOpen = temp;
+                      if (temp >= 0 && temp <= 59) WeekendMinuteOpen = temp;
                     } else if (param.indexOf("WeekendHourClose") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) WeekendHourClose = temp;
+                      if (temp >= 0 && temp <= 23) WeekendHourClose = temp;
                     } else if (param.indexOf("WeekendMinuteClose") == 0) {
                       temp = value.toInt();
-                      if (temp >= 0) WeekendMinuteClose = temp;
+                      if (temp >= 0 && temp <= 59) WeekendMinuteClose = temp;
                     } else if (param.indexOf("OpenMillis") == 0) {
                       temp = value.toInt();
                       if (temp >= 0) OpenMillis = temp;
@@ -673,6 +699,10 @@ void handleWebClient() {
                     } else if (param.indexOf("CurrentLimit") == 0) {
                       temp = value.toInt();
                       if (temp >= 0) CurrentLimit = temp;
+                    } else if (param.indexOf("TemperatureOffset") == 0) {
+                      TemperatureOffset = value.toInt();
+                    } else if (param.indexOf("ClosingTemperature") == 0) {
+                      ClosingTemperature = value.toInt();
                     } else {
                       invalidParam = true;
                     }
@@ -698,6 +728,7 @@ void handleWebClient() {
                 // Put new settings into EEPROM
                 EEPROM.put(0, dataPresent);
                 EEPROM.put(1, Timezone);
+                EEPROM.put(3, TemperatureOffset);
                 EEPROM.put(5, UseDST);
                 EEPROM.put(6, HourOpen);
                 EEPROM.put(7, MinuteOpen);
@@ -708,19 +739,44 @@ void handleWebClient() {
                 EEPROM.put(12, WeekendHourClose);
                 EEPROM.put(13, WeekendMinuteClose);
                 EEPROM.put(14, OpenMillis);
-                EEPROM.put(18, CloseMillis);
-                EEPROM.put(22, MemoryMillis);
-                EEPROM.put(26, CurrentLimit);
+                EEPROM.put(16, CloseMillis);
+                EEPROM.put(18, MemoryMillis);
+                EEPROM.put(20, CurrentLimit);
+                // Don't write retryPeriod here
 
                 // Write the data to EEPROM
                 bool ok = EEPROM.commit();
                 printLine((ok) ? "Commit OK" : "Commit failed");
               }
+            } else {
+              redirect = false;
             }
 
+            if (redirect) {
+              // Send the browser back to the main page, so the address bar no longer holds the
+              // command. Otherwise reloading or reopening the page would execute it again.
+              client.println("HTTP/1.1 303 See Other");
+              client.println("Location: /");
+              client.println("Connection: close");
+              client.println();
+
+              header = "";
+              client.stop();
+              printLine("Client redirected to main page");
+              printLine("");
+
+              clientActive = false;
+              return;
+            }
+
+            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
+            // and a content-type so the client knows what's coming, then a blank line
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-type:text/html");
+            client.println("Connection: close");
+            client.println();
+
             time_t t_now = now();
-            printDateTime(t_now);
-            printLine("");
 
             // Display the HTML web page
             client.println("<!DOCTYPE html><html>");
@@ -735,7 +791,7 @@ void handleWebClient() {
             client.println(".button2 {background-color: #77878A;}</style></head>");
 
             // Web Page Heading
-            client.println("<body><h1>ESP8266 Web Server</h1>");
+            client.println("<body><h1>Window Opener</h1>");
             client.print("<p>Today date/time: ");
             sprintf(buf, "%2d-%02d-%4d %02d:%02d:%02d",
               day(t_now), month(t_now), year(t_now), hour(t_now), minute(t_now), second(t_now));
@@ -771,6 +827,7 @@ void handleWebClient() {
             client.println("</p>");
 
             if (Bme280Present) {
+              temperature = bme.readTemperature() + (TemperatureOffset / 10.0);
               client.print("<p>Current temperature, humidity and pressure: ");
               sprintf(buf, "%0.1f*C, ", temperature);
               client.print(buf);
@@ -781,43 +838,53 @@ void handleWebClient() {
               client.println("</p>");
             }
 
-            //
+            // Action buttons
             client.print("<p>State: ");
             switch (stateMachineState) {
               case NotRunning:
-                client.print("NotRunning</p>");
+                client.println("NotRunning</p>");
                 break;
               case Stopped:
-                client.print("Stopped</p>");
+                client.println("Stopped</p>");
+                client.println("<p><a href=\"/open\"><button class=\"button\">Open</button></a></p>");
+                client.println("<p><a href=\"/close\"><button class=\"button\">Close</button></a></p>");
+                client.println("<p><a href=\"/close1sec\"><button class=\"button\">Close 1 Second</button></a></p>");
+                client.println("<p><a href=\"/open1sec\"><button class=\"button\">Open 1 Second</button></a></p>");
                 break;
               case Closed:
-                client.print("Closed</p>");
+                client.println("Closed</p>");
                 client.println("<p><a href=\"/open\"><button class=\"button\">Open</button></a></p>");
                 client.println("<p><a href=\"/close1sec\"><button class=\"button\">Close 1 Second</button></a></p>");
                 client.println("<p><a href=\"/open1sec\"><button class=\"button\">Open 1 Second</button></a></p>");
                 break;
               case Opening:
-                client.print("Opening</p>");
+                client.println("Opening</p>");
                 client.println("<p><a href=\"/stop\"><button class=\"button\">Stop</button></a></p>");
                 break;
               case Open:
-                client.print("Open</p>");
+                client.println("Open</p>");
                 client.println("<p><a href=\"/close\"><button class=\"button\">Close</button></a></p>");
                 client.println("<p><a href=\"/close1sec\"><button class=\"button\">Close 1 Second</button></a></p>");
                 client.println("<p><a href=\"/open1sec\"><button class=\"button\">Open 1 Second</button></a></p>");
                 break;
               case Closing:
-                client.print("Closing</p>");
+                client.println("Closing</p>");
                 client.println("<p><a href=\"/stop\"><button class=\"button\">Stop</button></a></p>");
                 break;
               case Moving1Sec:
-                client.print("Moving1Sec</p>");
+                client.println("Moving1Sec</p>");
                 break;
               default:
-                client.print("Unknown</p>");
+                client.println("Unknown</p>");
                 break;
             }
             client.println("<p><a href=\"/\"><button class=\"button\">Refresh</button></a></p><br>");
+
+            client.print("<p>Free heap: ");
+            client.print(ESP.getFreeHeap());
+            client.print(" bytes, largest free block: ");
+            client.print(ESP.getMaxFreeBlockSize());
+            client.println(" bytes</p>");
 
             // Print the form for uploading settings
             client.println("<form action=\"/params\">");
@@ -864,6 +931,14 @@ void handleWebClient() {
             client.print("<p>CurrentLimit:<input type=\"text\" name=\"CurrentLimit\" value=\"");
             client.print(CurrentLimit);
             client.println("\"></p>");
+            if (Bme280Present) {
+              client.print("<p>TemperatureOffset:<input type=\"text\" name=\"TemperatureOffset\" value=\"");
+              client.print(TemperatureOffset);
+              client.println("\"> in 0.1 &#176;C (10 means 1 &#176;C)</p>");
+              client.print("<p>ClosingTemperature:<input type=\"text\" name=\"ClosingTemperature\" value=\"");
+              client.print(ClosingTemperature);
+              client.println("\"> in 0.1 &#176;C</p>");
+            }
             client.println("<p><input type=\"submit\" value=\"Submit\"></p>");
             client.println("</form>");
 
@@ -894,11 +969,16 @@ void handleWebClient() {
       } else {
         // The client is connected but no data is available. Time out if this takes too long.
         if (now() > clientConnectedAt + webConnectPeriod) {
+          // Discard the partial request, so it doesn't use memory or end up in the next request
+          header = "";
+          client.stop();
           clientActive = false;
           printLine("Client connection timed out");
         }
       }
     } else {
+      header = "";
+      client.stop();
       clientActive = false;
       printLine("Client no longer connected");
     }
@@ -976,7 +1056,7 @@ void loop() {
   if (!ntpTimeSet) {
     // If not set, check for the time, but only for a few minutes.
     // In order not to do these checks every loop, proceed only once a second
-    if ((now() < updateTimeStarted + UpdateTimeTimeout) && (lastSecond != second())) {
+    if ((now() < clockUpdateStarted + UpdateTimeTimeout) && (lastSecond != second())) {
       // Send a packet every 30 seconds and check for an answer the other times
       if (second() % 30 == 8) {
         printNoLine("Requesting time from NTP server at ");
@@ -1015,16 +1095,18 @@ void loop() {
           setSunriseSunset();
 
           // Time was set, start the state machine for the window
-          stateMachineState = Stopped;
-          stateChanged = (stateMachineState != previousStateMachineState);
-          previousStateMachineState = stateMachineState;
+          if (stateMachineState == NotRunning) {
+            stateMachineState = Stopped;
+            stateChanged = true;
+            previousStateMachineState = stateMachineState;
+          }
         }
       }
       lastSecond = second();
-    } else if (now() > updateTimeStarted + 3600) {
+    } else if (now() > clockUpdateStarted + 3600) {
       // After an hour, try it again.
-      updateTimeStarted = now();
-    } else if (now() > updateTimeStarted + UpdateTimeTimeout) {
+      clockUpdateStarted = now();
+    } else if (now() > clockUpdateStarted + UpdateTimeTimeout) {
       // No time packet was received, send a warning email once.
       // Chances are the internet connection is down anyway.
       if (!emailSent) {
@@ -1035,13 +1117,14 @@ void loop() {
   } else {
     // Make sure the clock is updated once a week on Sunday mornings.
     // This also allows for DST to be set correctly. Note that time can move
-    // back or forward by one hour.
-    if (dayOfWeek(now()) == 1 && hour() == 1 && minute() == 10 && second() == 0) {
+    // back or forward by one hour. This must happen after the switch to or from
+    // DST (2 a.m. winter time, 3 a.m. summer time), so we do it at 3:30.
+    if (dayOfWeek(now()) == 1 && hour() == 3 && minute() == 30 && second() == 0) {
       printNoLine("Invalidating time at ");
       printDateTime(now());
       printLine("");
       ntpTimeSet = false;
-      updateTimeStarted = now();
+      clockUpdateStarted = now();
       emailSent = false;
     }
   }
@@ -1084,7 +1167,7 @@ void loop() {
     bme.takeForcedMeasurement();
 
     // Temperature
-    temperature = bme.readTemperature() - 2;      // Correction for my BME280
+    temperature = bme.readTemperature() + (TemperatureOffset / 10.0);
     humidity = bme.readHumidity() - 9.0;          // Correction for my BME280
     pressure = bme.readPressure() / 100.0F;       // Correction for my BME280
     printf("Temperature: %0.1f*C, humidity: %0.f%%, pressure: %0.1f hPa\r\n", temperature, humidity, pressure);
@@ -1132,7 +1215,13 @@ void loop() {
         }
         
         // Manual moves
-        if (userCommand == Open1SecCmd || userCommand == Close1SecCmd) {
+        if (userCommand == OpenCmd) {
+          userCommand = NoCmd;
+          stateMachineState = Opening;
+        } else if (userCommand == CloseCmd) {
+          userCommand = NoCmd;
+          stateMachineState = Closing;
+        } else if (userCommand == Open1SecCmd || userCommand == Close1SecCmd) {
           stateMachineState = Moving1Sec;
         }
       }
